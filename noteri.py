@@ -1,84 +1,107 @@
+import asyncio, threading
+import os
+import re
+import shutil
+import time
+
+from functools import partial
+from pathlib import Path
+
+import textual
+
+SCM_PATH = Path(textual.__file__).parent / "tree-sitter/highlights"
+
 from textual.app import App, ComposeResult
-from textual.widgets import Markdown, TextArea, Markdown, DirectoryTree, Markdown, Label, Input, Switch, Button, Footer, MarkdownViewer, Tree
+from textual.widgets import (
+    Markdown,
+    TextArea,
+    Markdown,
+    DirectoryTree,
+    Markdown,
+    Label,
+    Input,
+    Switch,
+    Button,
+    Footer,
+    MarkdownViewer,
+    Tree,
+)
 from textual.widgets.text_area import LanguageDoesNotExist
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
 from textual.validation import Length
 from textual.events import Event
-from textual import on
 from textual import work
 from textual.binding import Binding
 from textual import events
-import re
-import pyperclip 
-import threading
-from functools import partial
-from pathlib import Path
 from textual.command import Hit, Hits, Provider
-import os
-import argparse
-from tree_sitter_languages import get_language
-import shutil
-import time
 from textual._slug import TrackedSlugs
 
 
-SCM_PATH = "venv/lib/python3.11/site-packages/textual/tree-sitter/highlights/"
+try:
+    import pyperclip
+except:
+    pyperclip = None
 
-#TODO: File Exists new file check
-#TODO: 
+try:
+    from tree_sitter_languages import get_language
+except:
+    get_language = None
+
+
+# TODO: File Exists new file check
+# TODO:
+
 
 class WidgetCommands(Provider):
-
-    async def startup(self) -> None:  
+    async def startup(self) -> None:
         self.widgets = ["DirectoryTree", "#markdown", "TextArea", "#footer"]
 
-    async def search(self, query: str) -> Hits:  
-        matcher = self.matcher(query)  
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
         app = self.app
         assert isinstance(app, Noteri)
 
         for widget in self.widgets:
             command = f"Toggle {str(widget)}"
-            score = matcher.match(command)  
+            score = matcher.match(command)
             if score > 0:
                 yield Hit(
                     score,
-                    matcher.highlight(command),  
+                    matcher.highlight(command),
                     partial(app.toggle_widget_display, widget),
                     help="Toggle this widget",
-                )  
+                )
+
 
 class FileCommands(Provider):
-
-    def _read_files_helper(self, path, depth = 0):
-        file_list = []    
+    def _read_files_helper(self, path, depth=0):
+        file_list = []
         if depth == 5:
             return []
-        
+
         l = list(Path(path).glob("*"))
 
         for p in l:
             if p.name[0] == "." or p.name[0] == "venv":
                 continue
             if p.is_dir():
-                for item in self._read_files_helper(p, depth=depth+1):
+                for item in self._read_files_helper(p, depth=depth + 1):
                     file_list.append(item)
             elif p.is_file():
                 file_list.append(p)
         return file_list
 
-
     def read_files(self) -> list[Path]:
         return self._read_files_helper(Path(self.app.directory))
-        #return list(Path(self.app.directory).glob("*.*"))
+        # return list(Path(self.app.directory).glob("*.*"))
 
-    async def startup(self) -> None:  
+    async def startup(self) -> None:
         """Called once when the command palette is opened, prior to searching."""
         worker = self.app.run_worker(self.read_files, thread=True)
         self.file_paths = await worker.wait()
 
-    async def search(self, query: str) -> Hits:  
+    async def search(self, query: str) -> Hits:
         """Search for files."""
         matcher = self.matcher(query)
         app = self.app
@@ -86,7 +109,7 @@ class FileCommands(Provider):
 
         commands = {
             "Open": app.open_file,
-            "Link File": app.create_link, 
+            "Link File": app.create_link,
         }
 
         # Open File
@@ -99,11 +122,10 @@ class FileCommands(Provider):
                 if score > 0:
                     yield Hit(
                         score,
-                        matcher.highlight(full_command),  
+                        matcher.highlight(full_command),
                         partial(action, path),
-                        #help="Open this file in the viewer",
+                        # help="Open this file in the viewer",
                     )
-                
 
         # Define a map of commands and their respective actions
         commands = {
@@ -136,22 +158,17 @@ class FileCommands(Provider):
             "Heading 4": partial(app.action_heading, 4),
             "Heading 5": partial(app.action_heading, 5),
             "Heading 6": partial(app.action_heading, 6),
-
         }
 
         # Loop through the commands map
         for command, action in commands.items():
             score = matcher.match(command)
             if score > 0:
-                yield Hit(
-                    score,
-                    matcher.highlight(command),
-                    action
-                )
-        
+                yield Hit(score, matcher.highlight(command), action)
+
 
 class MarkdownTablePopup(ModalScreen):
-    BINDINGS = [ ("escape", "pop_screen") ]
+    BINDINGS = [("escape", "pop_screen")]
 
     def __init__(self, callback, validators=None):
         super().__init__()
@@ -166,39 +183,40 @@ class MarkdownTablePopup(ModalScreen):
         yield Label("Columns")
         yield Input(validators=self.validators, id="columns")
 
-    @on(Input.Submitted)
-    def submitted(self, event:Input.Submitted):
+    @textual.on(Input.Submitted)
+    def submitted(self, event: Input.Submitted):
         rows = int(self.query_one("#rows", expect_type=Input).value)
         columns = int(self.query_one("#columns", expect_type=Input).value)
         header = self.query_one("#header", expect_type=Switch).value
         self.app.post_message(Noteri.FileSystemCallback(self.callback, (rows, columns, header)))
         self.app.pop_screen()
 
+
 class InputPopup(ModalScreen):
-    BINDINGS = [ ("escape", "pop_screen") ]
+    BINDINGS = [("escape", "pop_screen")]
 
     def __init__(self, callback, title="Input", validators=None, default=""):
         super().__init__()
         self.callback = callback
         self.title = title
         self.validators = validators
-        self.default  = default
+        self.default = default
 
     def compose(self) -> ComposeResult:
         yield Label(self.title)
         yield Input(validators=self.validators, value=self.default)
-    
+
     # def on_mount(self):
     #     self.query_one("Input", expect_type=Input).focus()
 
-    @on(Input.Submitted)
-    def submitted(self, event:Input.Submitted):
+    @textual.on(Input.Submitted)
+    def submitted(self, event: Input.Submitted):
         self.app.post_message(Noteri.FileSystemCallback(self.callback, (event.input.value,)))
         self.app.pop_screen()
 
+
 class YesNoPopup(ModalScreen):
-    
-    BINDINGS = [ ("escape", "pop_screen") ]
+    BINDINGS = [("escape", "pop_screen")]
 
     def __init__(self, title, callback, message="") -> None:
         super().__init__()
@@ -212,18 +230,19 @@ class YesNoPopup(ModalScreen):
         yield Button("Yes", id="yes")
         yield Button("No", id="no", variant="error")
 
-    @on(Button.Pressed, "#yes")
-    def yes(self, event:Button.Pressed):
+    @textual.on(Button.Pressed, "#yes")
+    def yes(self, event: Button.Pressed):
         self.app.post_message(Noteri.FileSystemCallback(self.callback, (True,)))
         self.app.pop_screen()
-    
-    @on(Button.Pressed, "#no")
-    def no(self, event:Button.Pressed):
+
+    @textual.on(Button.Pressed, "#no")
+    def no(self, event: Button.Pressed):
         self.app.post_message(Noteri.FileSystemCallback(self.callback, (False,)))
         self.app.pop_screen()
-    
+
+
 class FileSelectionPopup(ModalScreen):
-    BINDINGS = [ ("escape", "pop_screen") ]
+    BINDINGS = [("escape", "pop_screen")]
 
     def __init__(self, title, callback, message="") -> None:
         super().__init__()
@@ -238,17 +257,19 @@ class FileSelectionPopup(ModalScreen):
         yield Label()
         yield Button("Create Link", "#create")
 
-    @on (DirectoryTree.FileSelected)
-    def file_selected(self, message:DirectoryTree.FileSelected):
+    @textual.on(DirectoryTree.FileSelected)
+    def file_selected(self, message: DirectoryTree.FileSelected):
         self.selected_file = Path(message.path)
 
-    @on(Button.Pressed, "#Create")
-    def yes(self, event:Button.Pressed):
+    @textual.on(Button.Pressed, "#Create")
+    def yes(self, event: Button.Pressed):
         self.app.post_message(Noteri.FileSystemCallback(self.callback, self.selected_file))
         self.app.pop_screen()
-    
+
+
 class ExtendedTextArea(TextArea):
     """A subclass of TextArea with parenthesis-closing functionality."""
+
     BINDINGS = [
         Binding("escape", "screen.focus_next", "Shift Focus", show=False),
         # Cursor movement
@@ -281,9 +302,7 @@ class ExtendedTextArea(TextArea):
             "cursor line start select",
             show=False,
         ),
-        Binding(
-            "shift+end", "cursor_line_end(True)", "cursor line end select", show=False
-        ),
+        Binding("shift+end", "cursor_line_end(True)", "cursor line end select", show=False),
         Binding("shift+up", "cursor_up(True)", "cursor up select", show=False),
         Binding("shift+down", "cursor_down(True)", "cursor down select", show=False),
         Binding("shift+left", "cursor_left(True)", "cursor left select", show=False),
@@ -294,26 +313,20 @@ class ExtendedTextArea(TextArea):
         Binding("f7", "select_all", "select all", show=False),
         # Deletion
         Binding("backspace", "delete_left", "delete left", show=False),
-        Binding(
-            "ctrl+w", "delete_word_left", "delete left to start of word", show=False
-        ),
+        Binding("ctrl+w", "delete_word_left", "delete left to start of word", show=False),
         Binding("delete,ctrl+d", "delete_right", "delete right", show=False),
-        Binding(
-            "ctrl+u", "delete_to_start_of_line", "delete to line start", show=False
-        ),
+        Binding("ctrl+u", "delete_to_start_of_line", "delete to line start", show=False),
         Binding("ctrl+k", "delete_to_end_of_line", "delete to line end", show=False),
     ]
 
-
-
-    def _insert_bookend_pair(self, bookend_start: str, bookend_end: str, only_selection = False) -> None:
+    def _insert_bookend_pair(self, bookend_start: str, bookend_end: str, only_selection=False) -> None:
         self.selected_text
         if self.selected_text == "" and not only_selection:
-            #check if surrounding text is already a pair
+            # check if surrounding text is already a pair
             start = self.cursor_location
             start = (start[0], start[1] - 1)
-            end   = self.cursor_location
-            end   = (end[0], end[1] + 1)
+            end = self.cursor_location
+            end = (end[0], end[1] + 1)
 
             if self.get_text_range(start, end) == bookend_start + bookend_end:
                 self.move_cursor_relative(columns=1)
@@ -324,8 +337,9 @@ class ExtendedTextArea(TextArea):
             selection = self.selection
             text = bookend_start + self.selected_text + bookend_end
             self.replace(text, selection.start, selection.end)
-            #self.selection = (selection.start, selection.end + len(bookend_end + bookend_start))
-    def _next_cell(self, forwards:bool) -> bool:
+            # self.selection = (selection.start, selection.end + len(bookend_end + bookend_start))
+
+    def _next_cell(self, forwards: bool) -> bool:
         text = self.get_text_range(self.get_cursor_line_start_location(), self.cursor_location)
 
         if not self.selected_text == "":
@@ -347,14 +361,14 @@ class ExtendedTextArea(TextArea):
             end = (cursor[0], cursor[1] - 1)
 
         text = self.get_text_range(start, end)
-        #find next pipe
+        # find next pipe
         if forwards:
-            match = re.search(r'\|', text)
+            match = re.search(r"\|", text)
             if match:
                 space = 3
                 match_start = match.start() + space
                 self.move_cursor_relative(columns=match_start)
-                #self.notify(f"Moving cursor forward to {match_start}. Searched from {str(start)} to {str(end)}")
+                # self.notify(f"Moving cursor forward to {match_start}. Searched from {str(start)} to {str(end)}")
                 return True
         else:
             # When moving backwards, we need to find the pipe that comes before the cursor's current position
@@ -365,7 +379,7 @@ class ExtendedTextArea(TextArea):
             text_before_cursor = self.get_text_range(start, end)
 
             # Find the last pipe in the text before the cursor
-            match = re.search(r'\|(?=[^\|]*$)', text_before_cursor)
+            match = re.search(r"\|(?=[^\|]*$)", text_before_cursor)
             if match:
                 # Calculate the position of the cursor relative to the start of the line
                 match_pos = match.start()
@@ -377,12 +391,11 @@ class ExtendedTextArea(TextArea):
                 self.move_cursor_relative(columns=cursor_move_distance)
                 self.notify(f"Moving cursor backwards to {cursor_move_distance}. Searched from {str(start)} to {str(end)}")
                 return True
-            
+
         self.notify(f"No match from {str(start)} to {str(end)}")
-        return False 
-    
+        return False
+
     def _whitespace(self, spaces: int) -> None:
-        
         start_location = self.get_cursor_line_start_location()
 
         if spaces < 0:
@@ -409,13 +422,13 @@ class ExtendedTextArea(TextArea):
                         new_lines.append(line)
                 text = "\n".join(new_lines)
                 self.replace(text, selection.start, selection.end)
-                #self.selection.end = (selection.end[0], selection.end[1] - spaces)
+                # self.selection.end = (selection.end[0], selection.end[1] - spaces)
             return
 
         if self.selected_text == "":
             before_cursor = self.get_text_range(self.get_cursor_line_start_location(), self.cursor_location)
             # check to see if - exists with arbitrary whitespace before
-            if re.match(r'\s*-\s', before_cursor):
+            if re.match(r"\s*-\s", before_cursor):
                 self.insert((" " * spaces), start_location)
                 self.notify("Match")
                 return
@@ -431,27 +444,25 @@ class ExtendedTextArea(TextArea):
             self.replace(text, selection.start, selection.end)
 
     def _continue_list(self, this_line) -> None:
-
         # if - or 1. continue list with same amount of whitespace as found string
-        leading_whitespace = re.match(r'(\s*)', this_line).group(1)
+        leading_whitespace = re.match(r"(\s*)", this_line).group(1)
 
-        match = re.match(r'\s*-\s\[\s\]\s[^\s]*', this_line)  # Check for todo list
+        match = re.match(r"\s*-\s\[\s\]\s[^\s]*", this_line)  # Check for todo list
         if match:
-            return f'\n{leading_whitespace}- [ ] '
+            return f"\n{leading_whitespace}- [ ] "
 
         # Determine the type of list from the previous line
-        match = re.match(r'\s*(\d+)\.\s[^\s]', this_line)  # Check for numbered list
+        match = re.match(r"\s*(\d+)\.\s[^\s]", this_line)  # Check for numbered list
         if match:
             next_number = int(match.group(1)) + 1
-            return f'\n{leading_whitespace}{next_number}. '
+            return f"\n{leading_whitespace}{next_number}. "
 
-        match = re.match(r'\s*-\s[^\s]', this_line)  # Check for bulleted list
+        match = re.match(r"\s*-\s[^\s]", this_line)  # Check for bulleted list
         if match:
-            return f'\n{leading_whitespace}- '
+            return f"\n{leading_whitespace}- "
 
         # Regular expression to match a markdown table row
-        table_row_re = re.compile(r'^\s*\|?(?:[^\|]*\|)+[^\|]*\|?\s*$')
-
+        table_row_re = re.compile(r"^\s*\|?(?:[^\|]*\|)+[^\|]*\|?\s*$")
 
         # check if next line can be calculated
 
@@ -466,7 +477,7 @@ class ExtendedTextArea(TextArea):
             next_line = self.get_text_range(next_start, next_end)
 
             # Notify about the next line - for debugging purposes
-            #self.notify(f"Next line: {next_line}")
+            # self.notify(f"Next line: {next_line}")
             next_line_match = table_row_re.match(next_line)
         else:
             next_line_match = False
@@ -478,12 +489,12 @@ class ExtendedTextArea(TextArea):
         if table_row_re.match(this_line) and not next_line_match:
             # Split the previous line into columns, taking into account leading and trailing spaces within the cells
             # We also maintain the outer spaces outside the first and last pipe
-            leading_spaces = this_line[:this_line.find('|')]
-            trailing_spaces = this_line[this_line.rfind('|')+1:]
-            columns = this_line.strip().split('|')[1:-1]  # Exclude the first and last empty elements after strip
-            
+            leading_spaces = this_line[: this_line.find("|")]
+            trailing_spaces = this_line[this_line.rfind("|") + 1 :]
+            columns = this_line.strip().split("|")[1:-1]  # Exclude the first and last empty elements after strip
+
             # Create a new row that maintains the same spacing as the previous row's columns
-            new_row = leading_spaces + '\n|' + '|'.join(' ' * len(col) for col in columns) + '|' + trailing_spaces
+            new_row = leading_spaces + "\n|" + "|".join(" " * len(col) for col in columns) + "|" + trailing_spaces
             self.insert(new_row, (self.cursor_location[0], len(self.document.lines[self.cursor_location[0]])))
             return None
 
@@ -497,7 +508,7 @@ class ExtendedTextArea(TextArea):
             current_line_up_to_cursor = self.get_text_range(current_line_start, self.cursor_location)
 
             # Count the number of pipes (cells) before the cursor on the current line to find the cell index
-            cell_index = current_line_up_to_cursor.count('|')
+            cell_index = current_line_up_to_cursor.count("|")
 
             # Move the cursor down one row
             self.move_cursor_relative(rows=1)
@@ -513,7 +524,7 @@ class ExtendedTextArea(TextArea):
             pipe_count = 0
             column_position = 0
             for char in next_line:
-                if char == '|':
+                if char == "|":
                     pipe_count += 1
                 if pipe_count == cell_index:
                     break
@@ -526,10 +537,8 @@ class ExtendedTextArea(TextArea):
 
             return None
 
-        return '\n'
+        return "\n"
 
-
-    
     def _newline(self) -> None:
         start_location = self.get_cursor_line_start_location()
         previous_line = self.get_text_range(start_location, self.cursor_location)
@@ -539,13 +548,13 @@ class ExtendedTextArea(TextArea):
         if ret != None:
             self.insert(ret)
             return
-        
+
     def _on_key(self, event: events.Key) -> None:
-        #self.notify(f"{event.character}  |  {event.aliases}")
+        # self.notify(f"{event.character}  |  {event.aliases}")
 
         if event.character == "(":
             self._insert_bookend_pair("(", ")")
-            event.prevent_default() 
+            event.prevent_default()
         elif event.character == "[":
             self._insert_bookend_pair("[", "]")
             event.prevent_default()
@@ -565,24 +574,24 @@ class ExtendedTextArea(TextArea):
             self._insert_bookend_pair("<", ">")
             event.prevent_default()
         elif event.character == "~":
-            self._insert_bookend_pair("~", "~", only_selection = True)
+            self._insert_bookend_pair("~", "~", only_selection=True)
             event.prevent_default()
         elif event.character == "*":
-            self._insert_bookend_pair("*", "*", only_selection = True)
+            self._insert_bookend_pair("*", "*", only_selection=True)
             event.prevent_default()
 
         elif "shift+tab" in event.aliases:
             if not self._next_cell(False):
                 self._whitespace(-4)
             event.prevent_default()
-             
+
         elif event.character == "\t":
             if not self._next_cell(True):
                 self._whitespace(4)
             event.prevent_default()
-        
+
         elif "shift+enter" in event.aliases:
-            regex = table_row_re = re.compile(r'^\s*\|?(?:[^\|]*\|)+[^\|]*\|?\s*$')
+            regex = table_row_re = re.compile(r"^\s*\|?(?:[^\|]*\|)+[^\|]*\|?\s*$")
             if regex.match(self.get_text_range(self.get_cursor_line_start_location(), self.get_cursor_line_end_location)):
                 self.move_cursor_relative(rows=-11)
 
@@ -590,7 +599,6 @@ class ExtendedTextArea(TextArea):
         elif "enter" in event.aliases:
             self._newline()
             event.prevent_default()
-
 
 
 class Noteri(App):
@@ -603,7 +611,7 @@ class Noteri(App):
         Binding("ctrl+r", "rename", "Rename File"),
         Binding("ctrl+d", "delete", "Delete File"),
         Binding("ctrl+shift+x", "cut", "Cut Text", priority=True),
-        #Binding("ctrl+shift+c", "copy", "Copy Text", priority=True),
+        # Binding("ctrl+shift+c", "copy", "Copy Text", priority=True),
         Binding("ctrl+y", "copy", "Copy Text", priority=True),
         Binding("ctrl+shift+v", "paste", "Paste Text", priority=True),
         Binding("ctrl+v", "paste", "Paste Text", priority=True),
@@ -625,7 +633,6 @@ class Noteri(App):
         Binding("ctrl+6", "heading", "Heading 6"),
         Binding("ctrl+y", "redo", "Redo"),
         Binding("ctrl+z", "undo", "Undo"),
-
         # Binding("ctrl+shift+c", "copy", "Copy Text", priority=True),
         # Binding("ctrl+shift+v", "paste", "Paste Text", priority=True),
     ]
@@ -635,7 +642,6 @@ class Noteri(App):
             super().__init__()
             self.callback = callback
             self.input = input
-
 
     def __init__(self, path="./"):
         super().__init__()
@@ -655,6 +661,7 @@ class Noteri(App):
         self.markdown_updates = []
         self.write_lock = threading.Lock()
         self.unprinted_changes = True
+        self.unprinted_footer = True
         self.last_find = ""
 
         self.expand_lock = threading.Lock()
@@ -664,36 +671,35 @@ class Noteri(App):
         if path.is_file():
             self.filename = path
 
-            #TODO: Path too
+            # TODO: Path too
 
         elif path.is_dir():
             self.directory = path
             self.selected_directory = path
-        
-
 
     def compose(self) -> ComposeResult:
         self.ta = ExtendedTextArea(id="text_area")
-        for scm_file in Path(SCM_PATH).glob("*.scm"):
-            self.app.ta.register_language(get_language(scm_file.stem), scm_file.read_text())
+        if get_language:
+            for scm_file in SCM_PATH.glob("*.scm"):
+                self.app.ta.register_language(get_language(scm_file.stem), scm_file.read_text())
         self.markdown = Markdown(id="markdown")
-        #self.table_of_contents = Markdown(id="table_of_contents")
-        
-        #Find  Binding("ctrl+x", "delete_line", "delete line", show=False) in self.ta., and remove it
+        # self.table_of_contents = Markdown(id="table_of_contents")
+
+        # Find  Binding("ctrl+x", "delete_line", "delete line", show=False) in self.ta., and remove it
         self.app.ta.BINDINGS = [b for b in self.ta.BINDINGS if b.key != "ctrl+x"]
         self.app.ta.action_delete_line = self.action_cut
         self.app.ta.delete_word_right = self.action_find
-        #with Vertical():
+        # with Vertical():
         with Horizontal():
             yield DirectoryTree(self.directory)
             yield self.ta
             with Vertical(id="md"):
                 yield Markdown("", id="title")
-                with ScrollableContainer(id = "scrollable_markdown"):
-                    #yield self.table_of_contents
+                with ScrollableContainer(id="scrollable_markdown"):
+                    # yield self.table_of_contents
                     yield self.markdown
                     yield Markdown(id="backlinks")
-                    #yield RadioButton(id="todo")
+                    # yield RadioButton(id="todo")
 
         yield Label(id="footer")
 
@@ -704,12 +710,11 @@ class Noteri(App):
         self.dt = self.query_one("DirectoryTree", expect_type=DirectoryTree)
         self.refresh_directory_tree()
         self.print_footer()
-        #self.query_one("#radio_buttons", expect_type=RadioButton).display = False
-        self.run_worker(self._update_markdown_worker, exit_on_error=True, thread=True )
-        self.run_worker(self._update_footer_worker, exit_on_error=True, thread=True)
+        # self.query_one("#radio_buttons", expect_type=RadioButton).display = False
+        self.run_worker(self._update_markdown_worker, exit_on_error=True, thread=False)
+        self.run_worker(self._update_footer_worker, exit_on_error=True, thread=False)
 
-
-    def _update_footer_worker(self):
+    async def _update_footer_worker(self):
         while self.app.is_running:
             if self.unprinted_footer:
                 unsaved_char = ""
@@ -719,57 +724,59 @@ class Noteri(App):
                 filename = self.filename
                 if self.filename is None:
                     filename = "New File"
-                
+
                 language = self.ta.language
-                    
+
                 if language is None:
                     language = "Plain Text"
 
                 selected_text = self.ta.selected_text
-                #calculate selection width
+                # calculate selection width
                 cursor_width = ""
                 if len(selected_text) > 0:
                     cursor_width = f" : {len(selected_text)}"
 
                 cursor_location = self.ta.cursor_location
-                self.query_one("#footer", expect_type=Label).update( 
-                f"{self.selected_directory} | {unsaved_char}{filename} | {language} | {str(cursor_location)}{cursor_width}"
+                self.query_one("#footer", expect_type=Label).update(
+                    f"{self.selected_directory} | {unsaved_char}{filename} | {language} | {str(cursor_location)}{cursor_width}"
                 )
                 self.unprinted_footer = False
 
-            time.sleep(1)
+            # time.sleep(1)
+            await asyncio.sleep(0.1)
 
     @work(thread=True, exclusive=True)
     def print_footer(self):
         self.unprinted_footer = True
 
-    @on(TextArea.SelectionChanged)
-    def cursor_moved(self, event:TextArea.SelectionChanged) -> None:
+    @textual.on(TextArea.SelectionChanged)
+    def cursor_moved(self, event: TextArea.SelectionChanged) -> None:
         self.print_footer()
 
     @work(thread=True, exclusive=True)
-    @on (TextArea.Changed, "#text_area")
-    def on_text_area_changed(self, event:TextArea.Changed) -> None:
+    @textual.on(TextArea.Changed, "#text_area")
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
         self.history_counter += 1
         self.unsaved_changes = True
 
         # with self.write_lock:
         self.unprinted_changes = True
-        #self.unprinted_changes = True
+        # self.unprinted_changes = True
         if self.history_counter > 5:
             self.add_history()
 
-    def _update_markdown_worker(self):
+    async def _update_markdown_worker(self):
         while self.app.is_running:
             if self.unprinted_changes:
                 with self.write_lock:
                     if self.unprinted_changes:
-                            self.unprinted_changes = False
-                            self.call_next(self.markdown.update, self.ta.text)
-            time.sleep(2)
+                        self.unprinted_changes = False
+                        self.call_next(self.markdown.update, self.ta.text)
+            # time.sleep(2)
+            await asyncio.sleep(0.1)
 
-    @on(DirectoryTree.FileSelected)
-    def file_selected(self, event:DirectoryTree.FileSelected):
+    @textual.on(DirectoryTree.FileSelected)
+    def file_selected(self, event: DirectoryTree.FileSelected):
         with self.expand_lock:
             if not self.allowed_to_expand:
                 return
@@ -777,17 +784,17 @@ class Noteri(App):
         self.open_file(event.path)
         self.unsaved_changes = False
 
-    @on(DirectoryTree.DirectorySelected)
-    def directory_selected(self, event:DirectoryTree.DirectorySelected):
+    @textual.on(DirectoryTree.DirectorySelected)
+    def directory_selected(self, event: DirectoryTree.DirectorySelected):
         with self.expand_lock:
             if not self.allowed_to_expand:
                 return
-        self.selected_directory = (event.path)
+        self.selected_directory = event.path
 
-    @on(Markdown.LinkClicked)
-    def linked_clicked(self, message:Markdown.LinkClicked ):
+    @textual.on(Markdown.LinkClicked)
+    def linked_clicked(self, message: Markdown.LinkClicked):
         self.toggle_class("DirectoryTree")
-        #read first character of path
+        # read first character of path
         href = message.href
         if href[0] == "#":
             tag = href[1:].replace("%20", " ")
@@ -798,7 +805,7 @@ class Noteri(App):
             self.notify(f"Opening external link {href}")
             os.system(f"open {href}")
             return
-        
+
         file_suffixs = [
             ".png",
             ".jpg",
@@ -849,11 +856,11 @@ class Noteri(App):
         for suffix in file_suffixs:
             if href.endswith(suffix):
                 self.notify(f"Opening external file {self.filename.parent}/{href}")
-                os.system(f"open \"{self.filename.parent}/{href}\"")
-                return                
+                os.system(f'open "{self.filename.parent}/{href}"')
+                return
 
-        #get subdirectory of filepath
-        #path = Path(self.filename).parent / href
+        # get subdirectory of filepath
+        # path = Path(self.filename).parent / href
         href = str(href).replace("%20", " ")
         if message.markdown.id == "backlinks":
             path = Path(href)
@@ -862,7 +869,7 @@ class Noteri(App):
 
         self.open_file(path)
 
-    def _update_backlinks_helper(self, path:Path):
+    def _update_backlinks_helper(self, path: Path):
         glob = list(Path(path).glob("./*"))
 
         for item in glob:
@@ -874,7 +881,7 @@ class Noteri(App):
             elif item.name.endswith(".md"):
                 with open(item, "r") as f:
                     text = f.read()
-                    if text.find( self.filename.name + ")") != -1:
+                    if text.find(self.filename.name + ")") != -1:
                         self.backlinks.append(item)
 
     def update_backlinks(self):
@@ -884,7 +891,7 @@ class Noteri(App):
 
         backlink_text = ""
 
-        #TODO: Sort
+        # TODO: Sort
 
         for item in self.backlinks:
             backlink_text += f"- [{item.name}]({str(item)})\n"
@@ -900,7 +907,6 @@ class Noteri(App):
         bl.update(backlink_text)
 
     def open_file(self, path: Path) -> None:
-
         if path == None:
             return
         if path.is_dir():
@@ -908,11 +914,12 @@ class Noteri(App):
 
         if self.unsaved_changes:
             self.action_stack.insert(0, partial(self.open_file, path))
-            self.push_screen(YesNoPopup("Unsaved Changes",  self.unsaved_changes_callback, message=f"Save Changes to {self.filename} ?"))
+            self.push_screen(
+                YesNoPopup("Unsaved Changes", self.unsaved_changes_callback, message=f"Save Changes to {self.filename} ?")
+            )
             return
 
         path = Path(path)
-        
 
         try:
             with open(path) as f:
@@ -925,10 +932,10 @@ class Noteri(App):
             self.notify(f"File not found: {path}", severity="error", title="FileNotFoundError")
             return
         except UnicodeDecodeError as e:
-            #self.notify(f"File is not a text file: {path}", severity="error", title="UnicodeDecodeError")
-            os.system(f"open \"{path}\"")
+            # self.notify(f"File is not a text file: {path}", severity="error", title="UnicodeDecodeError")
+            os.system(f'open "{path}"')
             return
-         
+
         file_extensions = {
             ".sh": "bash",
             ".css": "css",
@@ -975,13 +982,13 @@ class Noteri(App):
         self.history.clear()
         self.history_index = 0
         self.add_history()
-        
+
         self.configure_widths()
 
         self.unsaved_changes = False
         self.unprinted_footer = True
-        self.unprinted_changes  = True
-        
+        self.unprinted_changes = True
+
     def toggle_widget_display(self, id):
         widget = self.query_one(id)
 
@@ -993,7 +1000,6 @@ class Noteri(App):
         self.configure_widths()
 
     def configure_widths(self):
-
         # if both enabled set width to 50%
         # if one enabled set to 100% and 0%
         # if both disabled set to 0%
@@ -1036,28 +1042,24 @@ class Noteri(App):
     #             else:
     #                 node.display = False
 
-
     @work(exclusive=True)
     async def refresh_directory_tree(self):
-
         with self.expand_lock:
             self.allowed_to_expand = False
 
-        #self.dt.root.toggle_all()
-
+        # self.dt.root.toggle_all()
 
         node = self.dt.cursor_node
-        line  = self.dt.cursor_line
+        line = self.dt.cursor_line
         self.notify(f"Child len {len(self.dt.children)}")
-
 
         await self.dt.reload_node(self.dt.root)
 
-        #self.dt.root.toggle_all()
+        # self.dt.root.toggle_all()
 
-        #node = self.dt.get_node_by_id(id)
+        # node = self.dt.get_node_by_id(id)
         node = self.dt.get_node_at_line(line)
-        
+
         if node != None:
             self.dt.select_node(node)
         else:
@@ -1073,28 +1075,29 @@ class Noteri(App):
         self.refresh_directory_tree()
         self.open_file(Path(file_name))
         self.notify(f"Created {file_name}", title="Created")
-    
+
     def save_file(self, new_filename=None):
         if self.filename is None and new_filename is None:
             self.action_save_as()
             return
-                
+
         filename = self.filename if new_filename is None else new_filename
 
         with open(filename, "w") as f:
             f.write(self.ta.text)
         self.notify(f"Saved {filename}", title="Saved")
         self.filename = filename
-        
+
         self.refresh_directory_tree()
 
         self.unsaved_changes = False
         self.unprinted_footer = True
-        self.unprinted_changes  = True
+        self.unprinted_changes = True
 
     def delete_file(self):
         if self.dt.cursor_node.data.path.is_dir():
-            shutil.rmtree(self.dt.cursor_node.data.path)
+            if shutil.rmtree.avoids_symlink_attacks:
+                shutil.rmtree(self.dt.cursor_node.data.path)
         else:
             os.remove(self.dt.cursor_node.data.path)
         self.notify(f"Deleted {self.dt.cursor_node.data.path}", title="Deleted")
@@ -1120,10 +1123,10 @@ class Noteri(App):
             os.remove(tmp)
             self.dt.watch_path()
         return
-        
+
     def create_table(self, rows, columns, header):
         self.add_history()
-        
+
         self.history_counter
         insert_text = ""
         if header:
@@ -1137,17 +1140,16 @@ class Noteri(App):
         self.ta.replace(insert_text, self.ta.selection.start, self.ta.selection.end)
 
     def cleanup_table(self):
-        
         md_table = self.ta.selected_text
 
         if md_table == "":
             return
         if md_table == None:
             return
-        
-        lines = md_table.strip().split('\n')
-        header_cols = lines[0].split('|')[1:-1]
-        matrix = [line.split('|')[1:-1] for line in lines[2:]]
+
+        lines = md_table.strip().split("\n")
+        header_cols = lines[0].split("|")[1:-1]
+        matrix = [line.split("|")[1:-1] for line in lines[2:]]
         matrix = [[cell.strip() for cell in row] for row in matrix if any(cell.strip() for cell in row)]
         matrix.insert(0, [col.strip() for col in header_cols])  # Include headers in the matrix for width calculation
         matrix_transposed = list(zip(*matrix))
@@ -1162,14 +1164,15 @@ class Noteri(App):
             padding_total = max(width - len(cell), 0)
             padding_left = padding_total // 2
             padding_right = padding_total - padding_left
-            return ' ' * padding_left + cell + ' ' * padding_right
+            return " " * padding_left + cell + " " * padding_right
 
-        rebuilt_table = ['| ' + ' | '.join(center_cell(cell, width) for cell, width in zip(row, col_widths)) + ' |' for row in matrix[1:]]  # Exclude header row
-        rebuilt_header = '| ' + ' | '.join(center_cell(cell, width) for cell, width in zip(matrix[0], col_widths)) + ' |'
-        rebuilt_separator = '|-' + '-|-'.join('-' * width for width in col_widths) + '-|'
-        clean_table = '\n'.join([rebuilt_header, rebuilt_separator] + rebuilt_table)
+        rebuilt_table = [
+            "| " + " | ".join(center_cell(cell, width) for cell, width in zip(row, col_widths)) + " |" for row in matrix[1:]
+        ]  # Exclude header row
+        rebuilt_header = "| " + " | ".join(center_cell(cell, width) for cell, width in zip(matrix[0], col_widths)) + " |"
+        rebuilt_separator = "|-" + "-|-".join("-" * width for width in col_widths) + "-|"
+        clean_table = "\n".join([rebuilt_header, rebuilt_separator] + rebuilt_table)
 
-    
         self.ta.replace(clean_table, self.ta.selection.start, self.ta.selection.end)
 
     def unsaved_changes_callback(self, value):
@@ -1183,49 +1186,57 @@ class Noteri(App):
             self.delete_file()
 
     def action_new(self):
-        self.push_screen(InputPopup(self.new_file, title="New File", validators=[Length(minimum=1)], default = str(self.selected_directory) + "/"))
+        self.push_screen(
+            InputPopup(self.new_file, title="New File", validators=[Length(minimum=1)], default=str(self.selected_directory) + "/")
+        )
 
     def action_new_directory(self):
-        self.push_screen(InputPopup(self.new_directory, title="New Directory", validators=[Length(minimum=1)], default = str(self.selected_directory) + "/"))
-
+        self.push_screen(
+            InputPopup(
+                self.new_directory,
+                title="New Directory",
+                validators=[Length(minimum=1)],
+                default=str(self.selected_directory) + "/",
+            )
+        )
 
     def action_save(self):
         self.save_file()
-    
+
     def action_save_as(self):
         self.push_screen(InputPopup(self.save_file, title="Save As", validators=[Length(minimum=1)]))
 
     def action_rename(self):
         path = self.dt.cursor_node.data.path
         self.push_screen(InputPopup(self.rename_file, title="Rename", validators=[Length(minimum=1)], default=str(path)))
-    
+
     def action_delete(self):
         self.push_screen(YesNoPopup(f"Delete {self.dt.cursor_node.data.path}", self.delete_file_callback))
-    
+
     def action_copy(self):
-        
         self.clipboard = self.ta.selected_text
-        pyperclip.copy(self.clipboard)
-        self.notify(f"{self.clipboard}", title="Copied")
+        if pyperclip:
+            pyperclip.copy(self.clipboard)
+            self.notify(f"{self.clipboard}", title="Copied")
 
     def action_cut(self):
         self.action_copy()
-        
+
         self.ta.delete(self.ta.selection.start, self.ta.selection.end)
-        
+
     def action_paste(self):
-        
-        self.ta.replace(pyperclip.paste(), self.ta.selection.start, self.ta.selection.end)
+        if pyperclip:
+            self.ta.replace(pyperclip.paste(), self.ta.selection.start, self.ta.selection.end)
+        else:
+            self.ta.replace(self.clipboard, self.ta.selection.start, self.ta.selection.end)
 
     def action_table(self):
-        
         if self.ta.selected_text != "":
             self.cleanup_table()
             return
         self.push_screen(MarkdownTablePopup(self.create_table, validators=[Length(minimum=1)]))
 
     def generate_table_of_contents(self, table_of_contents):
-
         # _table_of_contents is (level, id, block_number)
         table_of_contents_lines = []
         previous_level = 1
@@ -1236,27 +1247,31 @@ class Noteri(App):
             id = header[1]
             block_number = header[2]
             if previous_level < level - 1:
-                for l in range(previous_level, level -1):
+                for l in range(previous_level, level - 1):
                     table_of_contents_lines.append(f"{'  '* (l - 1)}- ")
 
-            #github slug
+            # github slug
             tag = slugs.slug(id)
             table_of_contents_lines.append(f"{'  ' * (level - 1)}- [{id}](#{tag})")
             previous_level = level
 
         return "\n".join(table_of_contents_lines)
 
-
     def action_table_of_contents(self):
-        self.ta.replace(self.generate_table_of_contents(self.markdown._table_of_contents), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            self.generate_table_of_contents(self.markdown._table_of_contents),
+            self.ta.selection.start,
+            self.ta.selection.end,
+            maintain_selection_offset=False,
+        )
         # get all links
-    
+
     def action_directory_table_of_contents(self):
-        #generate a links to all files in directory, not including the current file
+        # generate a links to all files in directory, not including the current file
 
         lines = []
 
-        #get all files in directory
+        # get all files in directory
         for file in self.selected_directory.glob("./*"):
             if file.is_dir():
                 continue
@@ -1268,23 +1283,22 @@ class Noteri(App):
         self.ta.replace("\n".join(lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
 
     def action_bullet_list(self):
-        
         # in area selected, add a bullet to each line if it doesn't already exist
-        lines = self.ta.selected_text.split('\n')
+        lines = self.ta.selected_text.split("\n")
         refactored_lines = []
         for line in lines:
             # Check if the line already starts with a bullet
-            if not line.startswith('- '):
+            if not line.startswith("- "):
                 line = f"- {line}"
             refactored_lines.append(line)
-        
-        self.ta.replace('\n'.join(refactored_lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
 
-    
+        self.ta.replace(
+            "\n".join(refactored_lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False
+        )
+
     def action_numbered_list(self):
-        
         # In area selected, add "1. " to each line if not already numbered and not whitespace
-        lines = self.ta.selected_text.split('\n')
+        lines = self.ta.selected_text.split("\n")
         refactored_lines = []
         for line in lines:
             # Check if the line is not just whitespace and doesn't already start with a number followed by a dot and a space
@@ -1292,21 +1306,22 @@ class Noteri(App):
                 line = f"1. {line}"
             refactored_lines.append(line)
 
-        self.ta.replace('\n'.join(refactored_lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            "\n".join(refactored_lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False
+        )
 
     def action_block_quote(self):
-        
         refactored_lines = []
         # If there is a selection, wrap it in a code block
-        for line in self.ta.selected_text.split('\n'):
-            if not line.startswith('>'):
+        for line in self.ta.selected_text.split("\n"):
+            if not line.startswith(">"):
                 line = f"> {line}"
             refactored_lines.append(line)
-        self.ta.replace('\n'.join(refactored_lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            "\n".join(refactored_lines), self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False
+        )
 
     def action_code_block(self):
-        
-
         # If there is a selection, wrap it in a code block
         if self.ta.selected_text != "":
             self.ta.replace(f"```\n{self.ta.selected_text}\n```", self.ta.selection.start, self.ta.selection.end)
@@ -1316,45 +1331,51 @@ class Noteri(App):
         self.create_link()
 
     def action_bold(self):
-        
-        self.ta.replace(f"**{self.ta.selected_text}**", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            f"**{self.ta.selected_text}**", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False
+        )
 
     def action_italic(self):
-        
-        self.ta.replace(f"*{self.ta.selected_text}*", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            f"*{self.ta.selected_text}*", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False
+        )
 
     def action_horizontal_rule(self):
-        
         self.ta.replace(f"---", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
-    
+
     def action_heading(self, level):
-        
-        self.ta.replace(f"{'#' * level} {self.ta.selected_text}", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            f"{'#' * level} {self.ta.selected_text}",
+            self.ta.selection.start,
+            self.ta.selection.end,
+            maintain_selection_offset=False,
+        )
 
     def action_find(self):
         self.app.push_screen(InputPopup(self.find_text, title="Find", validators=[Length(minimum=1)], default=self.last_find))
         pass
-    
+
     def action_strikethrough(self):
-        self.ta.replace(f"~~{self.ta.selected_text}~~", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
+        self.ta.replace(
+            f"~~{self.ta.selected_text}~~", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False
+        )
 
     def find_text(self, search_text):
-
         self.last_find = search_text
-        
+
         cursor_location = self.ta.cursor_location
 
         # calculate the string index from a row collumn on newlines.
-        
+
         text = self.ta.text
         split_lines = text.split("\n")
 
-        #calculate lenths of each line and stop before greater than selection row
+        # calculate lenths of each line and stop before greater than selection row
         col = -1
         row = -1
         tmp_find_col = -1
-        split_lines[cursor_location[0]] = split_lines[cursor_location[0]][cursor_location[1] + 1:]
-        for i, line in enumerate(split_lines[cursor_location[0]:]):
+        split_lines[cursor_location[0]] = split_lines[cursor_location[0]][cursor_location[1] + 1 :]
+        for i, line in enumerate(split_lines[cursor_location[0] :]):
             tmp_find_col = line.find(search_text)
             if tmp_find_col != -1:
                 if i == 0:
@@ -1372,8 +1393,7 @@ class Noteri(App):
             self.ta.move_cursor_relative(columns=len(search_text), select=True)
 
     def action_copy_link(self):
-        
-        #put link into clipboard
+        # put link into clipboard
         text = f"[{self.filename.name}]({self.filename})"
         pyperclip.copy(self.ta.selected_text)
 
@@ -1383,17 +1403,15 @@ class Noteri(App):
 
         ta = self.query_one("TextArea", TextArea)
         if self.history_index < len(self.history) - 1:
-            self.history[self.history_index] = { "text": self.ta.text, 
-                                                 "cursor_location": self.ta.cursor_location}
-            #remove forward history
-            self.history = self.history[:self.history_index + 1]
-            #self.notify("Remove forward history")
+            self.history[self.history_index] = {"text": self.ta.text, "cursor_location": self.ta.cursor_location}
+            # remove forward history
+            self.history = self.history[: self.history_index + 1]
+            # self.notify("Remove forward history")
         else:
-            self.history.append({ "text": self.ta.text, 
-                                  "cursor_location": self.ta.cursor_location})
+            self.history.append({"text": self.ta.text, "cursor_location": self.ta.cursor_location})
         self.history_index += 1
         self.history_counter = 0
-        #self.notify(f"add history. {self.history_index} {len(self.history)}")
+        # self.notify(f"add history. {self.history_index} {len(self.history)}")
 
         # make self.history only latest 10
         if len(self.history) > 10:
@@ -1401,8 +1419,7 @@ class Noteri(App):
             self.history_index = 9
 
     def action_undo(self):
-        
-        #self.notify(f"Index: {self.history_index} Len History: {len(self.history)}")
+        # self.notify(f"Index: {self.history_index} Len History: {len(self.history)}")
 
         if self.history_index > 0:
             self.history_index -= 1
@@ -1411,15 +1428,13 @@ class Noteri(App):
             self.ta.load_text(self.history[self.history_index]["text"])
             self.ta.cursor_location = self.history[self.history_index]["cursor_location"]
             self.history_counter = -1
-        
+
         self.history_disabled = False
 
         if self.history_index == 0:
             self.add_history()
 
     def action_redo(self):
-        
-
         if self.history_index < len(self.history) - 1:
             self.history_index += 1
             self.history_disabled = True
@@ -1428,21 +1443,19 @@ class Noteri(App):
             self.history_counter = -1
         self.history_disabled = False
 
-    def create_link(self, link:str=None, message=None, relative=True):
-        
-
+    def create_link(self, link: str = None, message=None, relative=True):
         if link == None:
-            #TODO: Fuzzy match existing files
-            if self.ta.selected_text.startswith('htt') or self.ta.selected_text.startswith("#"):
+            # TODO: Fuzzy match existing files
+            if self.ta.selected_text.startswith("htt") or self.ta.selected_text.startswith("#"):
                 link = self.ta.selected_text
-            elif  self.ta.selected_text.endswith(".md"):
+            elif self.ta.selected_text.endswith(".md"):
                 link = self.ta.selected_text
             else:
                 link = ""
 
         if str(link).endswith(".md") and relative:
             link_path = Path(link)
-            
+
             try:
                 self.notify(f"{self.selected_directory}\n{link_path}")
                 link = link_path.relative_to(self.selected_directory)
@@ -1459,20 +1472,22 @@ class Noteri(App):
             else:
                 message = self.ta.selected_text
 
-        self.ta.replace(f"[{message}]({link})", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)        
+        self.ta.replace(f"[{message}]({link})", self.ta.selection.start, self.ta.selection.end, maintain_selection_offset=False)
 
-    @on(FileSystemCallback)
-    def callback_message(self, message:FileSystemCallback):
+    @textual.on(FileSystemCallback)
+    def callback_message(self, message: FileSystemCallback):
         message.callback(*message.input)
-        
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("path", default="./", nargs='?', help="Path to file or directory to open")
-    args = parser.parse_args()
-
-    app = Noteri(args.path)
-    app.run()
 
 if __name__ == "__main__":
+    import argparse
+
+    def main():
+        parser = argparse.ArgumentParser()
+        parser.add_argument("path", default="./", nargs="?", help="Path to file or directory to open")
+        args = parser.parse_args()
+
+        app = Noteri(args.path)
+        app.run()
+
     main()
